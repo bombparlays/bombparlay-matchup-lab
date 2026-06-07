@@ -633,19 +633,33 @@ async def parse_park_image(file: UploadFile = File(...)):
     Receive a Ballpark Pal screenshot, send it to Claude vision,
     and return extracted park HR modifier data.
     """
+    import json as json_lib
     try:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
-            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured on server")
+            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set on Render — add it under Environment tab")
 
-        # Read and base64-encode the uploaded image
+        # Read and base64-encode the image
         image_bytes = await file.read()
-        image_b64   = base64.b64encode(image_bytes).decode("utf-8")
-        media_type  = file.content_type or "image/png"
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        image_b64  = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Force a safe media type — some browsers send odd content types
+        raw_type   = (file.content_type or "image/png").lower()
+        if "jpeg" in raw_type or "jpg" in raw_type:
+            media_type = "image/jpeg"
+        elif "gif" in raw_type:
+            media_type = "image/gif"
+        elif "webp" in raw_type:
+            media_type = "image/webp"
+        else:
+            media_type = "image/png"
 
         payload = {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1000,
+            "model": "claude-opus-4-5",
+            "max_tokens": 1024,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -660,45 +674,46 @@ async def parse_park_image(file: UploadFile = File(...)):
                     {
                         "type": "text",
                         "text": (
-                            "This is a Ballpark Pal screenshot showing daily park factors for MLB games.\n"
-                            "Extract the HR (home run) modifier percentage for each park or team visible.\n"
-                            "Return ONLY a valid JSON object with no markdown, no explanation, no code fences.\n"
-                            "Format exactly:\n"
-                            "{\"park_data\": [{\"park\": \"Park or Team Name\", \"hr_mod\": <integer>}, ...]}\n"
-                            "For the Daily Stadium Report style: use the HR column percentage number as hr_mod (e.g. +26 or -11).\n"
-                            "For the Totals table style: compute hr_mod as round((total - 1.15) / 1.15 * 100) where 1.15 is league avg.\n"
-                            "Extract every row visible. Return integers only for hr_mod, no % sign."
+                            "This is a Ballpark Pal screenshot showing daily MLB park factors.\n"
+                            "Extract the HR modifier percentage for every park or team you can see.\n"
+                            "Return ONLY raw JSON — no markdown, no explanation, no code fences.\n"
+                            "Exact format: {\"park_data\": [{\"park\": \"Name\", \"hr_mod\": 12}, ...]}\n"
+                            "For Daily Stadium Report: hr_mod is the HR column number (integer, e.g. 26 or -11).\n"
+                            "For Totals table: hr_mod = round((total_hrs - 1.15) / 1.15 * 100).\n"
+                            "Only integers for hr_mod. No percent signs. Extract every visible row."
                         )
                     }
                 ]
             }]
         }
 
-        response = requests.post(
+        resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
                 "Content-Type": "application/json",
                 "x-api-key": api_key,
-                "anthropic-version": "2023-06-01"
+                "anthropic-version": "2023-06-01",
             },
             json=payload,
-            timeout=30
+            timeout=45,
         )
-        response.raise_for_status()
-        data = response.json()
 
-        text = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                text += block.get("text", "")
+        # Surface Anthropic's actual error message for debugging
+        if not resp.ok:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"Anthropic API error {resp.status_code}: {resp.text[:500]}"
+            )
 
-        # Strip any accidental markdown fences
-        clean = text.replace("```json", "").replace("```", "").strip()
-        import json
-        parsed = json.loads(clean)
+        data  = resp.json()
+        text  = "".join(b.get("text","") for b in data.get("content",[]) if b.get("type")=="text")
+        clean = text.replace("```json","").replace("```","").strip()
+        parsed = json_lib.loads(clean)
         return parsed
 
     except HTTPException:
         raise
+    except json_lib.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Could not parse Claude response as JSON: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image parse error: {str(e)}")
