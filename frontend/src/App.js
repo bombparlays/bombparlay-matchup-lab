@@ -448,50 +448,21 @@ function BallparkPalUploader({ onDataLoaded }) {
     setUploading(true);
     setStatus(null);
     try {
-      const base64 = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = () => rej(new Error("Read failed"));
-        r.readAsDataURL(file);
-      });
+      // Send image directly to our backend — avoids CORS issues with Anthropic API
+      const formData = new FormData();
+      formData.append("file", file);
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch(`${API_BASE}/parse-park-image`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: file.type || "image/png", data: base64 }
-              },
-              {
-                type: "text",
-                text: `This is a Ballpark Pal screenshot showing daily park factors for MLB games.
-Extract the HR (home run) modifier for each park/team visible in the image.
-Return ONLY a JSON object with no markdown, no explanation. Format:
-{
-  "park_data": [
-    { "park": "Park Name or Team Name", "hr_mod": number (positive or negative integer) },
-    ...
-  ]
-}
-For the Daily Stadium Report (Image 2 style), use the HR column percentage number.
-For the Totals table (Image 1 style), use the Total projected HRs column as the hr_mod (convert to a +/- vs league avg of 1.0, multiply by 25 to get a percentage).
-Extract every row you can see.`
-              }
-            ]
-          }]
-        })
+        body: formData,
       });
 
-      const data = await response.json();
-      const text = data.content?.find(b => b.type === "text")?.text || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || `Server error ${response.status}`);
+      }
+
+      const parsed = await response.json();
 
       const parkMap = {};
       (parsed.park_data || []).forEach(entry => {

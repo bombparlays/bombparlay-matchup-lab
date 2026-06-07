@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import date, timedelta
 import pandas as pd
@@ -7,6 +7,8 @@ from pybaseball import statcast_batter, statcast_pitcher
 import requests
 import warnings
 import pybaseball
+import os
+import base64
 warnings.filterwarnings("ignore")
 
 pybaseball.cache.enable()
@@ -624,3 +626,79 @@ def get_player(name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/parse-park-image")
+async def parse_park_image(file: UploadFile = File(...)):
+    """
+    Receive a Ballpark Pal screenshot, send it to Claude vision,
+    and return extracted park HR modifier data.
+    """
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured on server")
+
+        # Read and base64-encode the uploaded image
+        image_bytes = await file.read()
+        image_b64   = base64.b64encode(image_bytes).decode("utf-8")
+        media_type  = file.content_type or "image/png"
+
+        payload = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 1000,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_b64
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "This is a Ballpark Pal screenshot showing daily park factors for MLB games.\n"
+                            "Extract the HR (home run) modifier percentage for each park or team visible.\n"
+                            "Return ONLY a valid JSON object with no markdown, no explanation, no code fences.\n"
+                            "Format exactly:\n"
+                            "{\"park_data\": [{\"park\": \"Park or Team Name\", \"hr_mod\": <integer>}, ...]}\n"
+                            "For the Daily Stadium Report style: use the HR column percentage number as hr_mod (e.g. +26 or -11).\n"
+                            "For the Totals table style: compute hr_mod as round((total - 1.15) / 1.15 * 100) where 1.15 is league avg.\n"
+                            "Extract every row visible. Return integers only for hr_mod, no % sign."
+                        )
+                    }
+                ]
+            }]
+        }
+
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            },
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        text = ""
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                text += block.get("text", "")
+
+        # Strip any accidental markdown fences
+        clean = text.replace("```json", "").replace("```", "").strip()
+        import json
+        parsed = json.loads(clean)
+        return parsed
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image parse error: {str(e)}")
