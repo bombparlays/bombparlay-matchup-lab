@@ -545,6 +545,9 @@ export default function App() {
   const [error, setError]                     = useState(null);
   const [gameDate, setGameDate]               = useState("");
   const [bpParkData, setBpParkData]           = useState({});
+  const [cacheStatus, setCacheStatus]         = useState(null);
+  const [buildPolling, setBuildPolling]       = useState(false);
+  const pollRef = useRef(null);
 
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric"
@@ -567,10 +570,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "targets" && slate.length > 0 && targets.length === 0 && !loadingTargets) {
+    if (activeTab === "targets" && slate.length > 0 && targets.length === 0 && !loadingTargets && !buildPolling) {
       loadTopTargets();
     }
   }, [activeTab, slate]);
+
+  // Cleanup polling on unmount
+  useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current); }; }, []);
 
   const loadSlate = async (d = null) => {
     setLoadingSlate(true); setError(null);
@@ -583,16 +589,54 @@ export default function App() {
     finally { setLoadingSlate(false); }
   };
 
-  const loadTopTargets = async () => {
+  const pollCacheStatus = async () => {
+    try {
+      const res  = await fetch(`${API_BASE}/cache-status`);
+      const data = await res.json();
+      setCacheStatus(data);
+      if (data.build_status === "complete" && data.targets_ready) {
+        // Build finished — load the cached results
+        clearInterval(pollRef.current);
+        setBuildPolling(false);
+        const res2  = await fetch(`${API_BASE}/top-targets`);
+        const data2 = await res2.json();
+        setTargets(data2.targets || []);
+        setLoadingTargets(false);
+      } else if (data.build_status === "error") {
+        clearInterval(pollRef.current);
+        setBuildPolling(false);
+        setLoadingTargets(false);
+        setError("Build failed — try refreshing again");
+      }
+      // Also load stored park data if available
+      if (data.park_ready && Object.keys(bpParkData).length === 0) {
+        const pRes  = await fetch(`${API_BASE}/park-data`);
+        const pData = await pRes.json();
+        if (pData.available && pData.park_map) {
+          setBpParkData(pData.park_map);
+        }
+      }
+    } catch(e) { console.error("Poll error:", e); }
+  };
+
+  const loadTopTargets = async (force = false) => {
     setLoadingTargets(true); setError(null);
     try {
-      const url  = gameDate ? `${API_BASE}/top-targets?game_date=${gameDate}` : `${API_BASE}/top-targets`;
+      const url  = `${API_BASE}/top-targets${force ? "?force=true" : ""}`;
       const res  = await fetch(url);
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json();
+      if (data.building) {
+        // Background build started — start polling
+        setBuildPolling(true);
+        setCacheStatus({ build_status: "building", build_progress: 0, build_total: data.build_total || 0 });
+        pollRef.current = setInterval(pollCacheStatus, 8000);
+        return; // keep loadingTargets = true until poll completes
+      }
       setTargets(data.targets || []);
+      if (data.cached_at) setCacheStatus(prev => ({ ...prev, targets_cached_at: data.cached_at }));
     } catch (e) { setError(`Could not load targets: ${e.message}`); }
-    finally { setLoadingTargets(false); }
+    finally { if (!buildPolling) setLoadingTargets(false); }
   };
 
   const loadMatchups = useCallback(async (game) => {
@@ -695,8 +739,20 @@ export default function App() {
               <span style={{ fontSize:10, color:C.muted, letterSpacing:"2px", textTransform:"uppercase" }}>
                 Top 15 HR Targets — Full Slate
               </span>
-              <button style={s.btn()} onClick={loadTopTargets} disabled={loadingTargets}>
-                {loadingTargets ? "Loading..." : "↻ Refresh"}
+              {cacheStatus?.targets_cached_at && (
+                <span style={{ fontSize:9, color:C.green, background:"#052e16", padding:"2px 8px",
+                               borderRadius:4, border:"1px solid #4ade8033" }}>
+                  ✓ Cached {cacheStatus.targets_cached_at}
+                </span>
+              )}
+              {cacheStatus?.park_ready && (
+                <span style={{ fontSize:9, color:C.teal, background:"#042f2e", padding:"2px 8px",
+                               borderRadius:4, border:"1px solid #2dd4bf33" }}>
+                  📊 BP Pal Active
+                </span>
+              )}
+              <button style={s.btn()} onClick={() => loadTopTargets(true)} disabled={loadingTargets}>
+                {loadingTargets ? (buildPolling ? "Building..." : "Loading...") : "↻ Force Refresh"}
               </button>
             </div>
             <div style={{ display:"flex", gap:14, marginBottom:12, flexWrap:"wrap" }}>
@@ -708,8 +764,32 @@ export default function App() {
               ))}
             </div>
             {loadingTargets ? (
-              <div style={s.loading}><Spinner /><div>Loading top targets — 60-90 seconds...</div>
-                <div style={{ marginTop:8, fontSize:10, color:"#374151" }}>Pulling Statcast data for every batter on every team</div>
+              <div style={s.loading}>
+                <Spinner />
+                {buildPolling && cacheStatus ? (
+                  <>
+                    <div>Building today's data — please wait...</div>
+                    <div style={{ marginTop:12, width:300, margin:"12px auto 0" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#64748b", marginBottom:4 }}>
+                        <span>Players processed</span>
+                        <span>{cacheStatus.build_progress || 0} / {cacheStatus.build_total || "..."}</span>
+                      </div>
+                      <div style={{ height:6, background:"#1e293b", borderRadius:3, overflow:"hidden" }}>
+                        <div style={{
+                          width: cacheStatus.build_total ? `${Math.round((cacheStatus.build_progress/cacheStatus.build_total)*100)}%` : "0%",
+                          height:"100%", background:"linear-gradient(90deg,#1a56db,#4ade80)",
+                          borderRadius:3, transition:"width 1s ease"
+                        }} />
+                      </div>
+                    </div>
+                    <div style={{ marginTop:10, fontSize:10, color:"#374151" }}>
+                      Page auto-refreshes every 8 seconds. First load of the day takes 4-6 minutes.<br/>
+                      After that, data loads instantly from cache.
+                    </div>
+                  </>
+                ) : (
+                  <div>Loading top targets...</div>
+                )}
               </div>
             ) : targets.length === 0 ? (
               <div style={s.noData}><div style={{ fontSize:28, marginBottom:10 }}>🎯</div>
