@@ -244,7 +244,7 @@ function MatchupTable({ rows, sortKey, sortDir, onSort, bpParkData }) {
     });
   }, [rows, sortKey, sortDir]);
 
-  if (!rows.length) return <div style={s.noData}>No lineup data yet — posts 3-4 hrs before first pitch</div>;
+  if (!rows.length) return <div style={s.noData}>No data available for this game yet</div>;
 
   const renderCell = (col, row, i) => {
     const val = row[col.key];
@@ -263,7 +263,15 @@ function MatchupTable({ rows, sortKey, sortDir, onSort, bpParkData }) {
             {row.pitcher_icon && <span title={row.pitcher_label} style={{ fontSize: 13 }}>{row.pitcher_icon}</span>}
           </span>
         ) : col.key === "hr_form" ? <span style={s.formArrow(val)}>{val}</span>
-          : col.key === "player"  ? <span style={{ fontWeight: 600, color: "#e2e8f0" }}>{val}</span>
+          : col.key === "player"  ? (
+            <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ fontWeight:600, color:"#e2e8f0" }}>{val}</span>
+              {row.lineup_status === "confirmed"
+                ? <span style={{ fontSize:8, padding:"1px 5px", borderRadius:3, background:"#052e16", color:"#4ade80", border:"1px solid #4ade8033", fontWeight:700 }}>✓ IN</span>
+                : <span style={{ fontSize:8, padding:"1px 5px", borderRadius:3, background:"#1e1a2e", color:"#a78bfa", border:"1px solid #a78bfa33", fontWeight:700 }}>ROSTER</span>
+              }
+            </span>
+          )
           : col.key === "opposing_pitcher" ? (
             <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <span style={{ color: C.muted }}>{val}</span>
@@ -398,7 +406,15 @@ function TopTargetsTable({ targets, bpParkData }) {
                               {row.pitcher_icon && <span style={{ fontSize: 13 }}>{row.pitcher_icon}</span>}
                             </span>
                           ) : col.key === "hr_form"  ? <span style={s.formArrow(val)}>{val}</span>
-                            : col.key === "player"   ? <span style={{ fontWeight: 700, color: "#e2e8f0" }}>{val}</span>
+                            : col.key === "player"   ? (
+                        <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <span style={{ fontWeight: 700, color: "#e2e8f0" }}>{val}</span>
+                          {row.lineup_status === "confirmed"
+                            ? <span style={{ fontSize:8, padding:"1px 5px", borderRadius:3, background:"#052e16", color:"#4ade80", border:"1px solid #4ade8033", fontWeight:700 }}>✓ IN</span>
+                            : <span style={{ fontSize:8, padding:"1px 5px", borderRadius:3, background:"#1e1a2e", color:"#a78bfa", border:"1px solid #a78bfa33", fontWeight:700 }}>ROSTER</span>
+                          }
+                        </span>
+                      )
                             : col.key === "park_factor" ? <span style={s.parkBadge(row.park_tier)}>{val}</span>
                             : col.key === "p_throws" ? <span style={{ color: val === "L" ? C.purple : C.blueLt, fontWeight: 600 }}>{val === "L" ? "LHP" : "RHP"}</span>
                             : col.key === "split_xwoba" ? (

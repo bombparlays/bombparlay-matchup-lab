@@ -349,20 +349,55 @@ def get_todays_games(game_date: str = None) -> list:
             })
     return games
 
+def get_active_roster(team_id: int) -> list:
+    """Pull full 26-man active roster for a team — available any time, no lineup needed."""
+    url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?rosterType=active"
+    try:
+        r    = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        roster = []
+        for p in data.get("roster", []):
+            pos = p.get("position", {}).get("abbreviation", "")
+            # Skip pitchers — only position players
+            if pos in ["P", "SP", "RP"]:
+                continue
+            roster.append({
+                "name":   p.get("person", {}).get("fullName", "Unknown"),
+                "mlb_id": p.get("person", {}).get("id"),
+                "status": "roster",
+            })
+        return roster
+    except Exception as e:
+        print(f"Roster error for team {team_id}: {e}")
+        return []
+
 def get_lineup(game_id: int, team_id: int) -> list:
+    """
+    Try to get confirmed lineup from boxscore first.
+    If lineup not posted yet, fall back to full active roster.
+    Each player is tagged with status: 'confirmed' or 'roster'
+    """
+    # 1. Try confirmed lineup from boxscore
     url = f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore"
     try:
         r    = requests.get(url, timeout=15)
         r.raise_for_status()
         data = r.json()
-        side = "home" if data["teams"]["home"]["team"]["id"] == team_id else "away"
+        side    = "home" if data["teams"]["home"]["team"]["id"] == team_id else "away"
         batters = data["teams"][side].get("battingOrder", [])
         players = data["teams"][side].get("players", {})
-        return [{"name": players.get(f"ID{pid}", {}).get("person", {}).get("fullName", "Unknown"),
-                 "mlb_id": players.get(f"ID{pid}", {}).get("person", {}).get("id")}
-                for pid in batters]
+        if batters:
+            return [{"name":   players.get(f"ID{pid}", {}).get("person", {}).get("fullName", "Unknown"),
+                     "mlb_id": players.get(f"ID{pid}", {}).get("person", {}).get("id"),
+                     "status": "confirmed"}
+                    for pid in batters]
     except Exception:
-        return []
+        pass
+
+    # 2. Fall back to full active roster (position players only)
+    print(f"No confirmed lineup for game {game_id} team {team_id} — using active roster")
+    return get_active_roster(team_id)
 
 def search_player_id(name: str):
     url = f"https://statsapi.mlb.com/api/v1/people/search?names={requests.utils.quote(name)}&sportId=1"
@@ -381,6 +416,7 @@ def build_player_row(batter, bstats, pitcher_stats, pitcher_name, pitcher_tier,
     ceiling  = compute_ceiling(hr_score, bstats)
     return {
         "player": batter["name"], "team": team_name, "side": side, "game": game_label,
+        "lineup_status": batter.get("status", "roster"),
         "opposing_pitcher": pitcher_name, "pitcher_tier": pitcher_tier["tier"],
         "pitcher_label": pitcher_tier["label"], "pitcher_icon": pitcher_tier["icon"],
         "pitcher_type": pitcher_stats.get("pitcher_type", ""), "p_throws": pitcher_stats.get("p_throws", "R"),
